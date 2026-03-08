@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Treasury Admin Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans">
+
+    <div id="auth-guard" class="h-screen flex flex-col items-center justify-center bg-white z-50 absolute w-full">
+        <div id="loading-text" class="text-xl font-semibold mb-4">Authenticating Admin...</div>
+        <button id="login-btn" class="hidden bg-blue-600 text-white px-6 py-2 rounded shadow hover:bg-blue-700">Login with Google</button>
+        <div id="rejected-text" class="hidden mt-4 text-2xl font-bold text-red-600">You are not an admin. Please exit the software.</div>
+    </div>
+
+    <div id="app-container" class="hidden flex h-screen overflow-hidden">
+        
+        <aside id="sidebar" class="bg-slate-900 text-white w-64 flex-shrink-0 transition-transform transform -translate-x-full fixed inset-y-0 left-0 z-40 md:relative md:translate-x-0">
+            <div class="p-6 text-2xl font-bold border-b border-slate-800 flex justify-between items-center">
+                <span>Treasury</span>
+                <button id="close-sidebar-btn" class="md:hidden text-gray-400 hover:text-white">&times;</button>
+            </div>
+            <nav class="p-4 space-y-2">
+                <button data-target="overview" class="nav-btn w-full text-left p-3 rounded hover:bg-slate-800 focus:bg-slate-800">Overview</button>
+                <button data-target="members" class="nav-btn w-full text-left p-3 rounded hover:bg-slate-800 focus:bg-slate-800">Members</button>
+                <button data-target="transactions" class="nav-btn w-full text-left p-3 rounded hover:bg-slate-800 focus:bg-slate-800">Transactions</button>
+                <button data-target="audit" class="nav-btn w-full text-left p-3 rounded hover:bg-slate-800 focus:bg-slate-800">Audit Log</button>
+            </nav>
+        </aside>
+
+        <main class="flex-1 flex flex-col h-screen overflow-y-auto">
+            <header class="bg-white shadow-sm p-4 flex items-center justify-between z-30">
+                <div class="flex items-center">
+                    <button id="hamburger-btn" class="md:hidden mr-4 text-gray-600 hover:text-gray-900">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    </button>
+                    <h1 id="welcome-msg" class="text-xl font-semibold">Welcome</h1>
+                </div>
+                <div class="flex gap-3">
+                    <button id="export-btn" class="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 text-sm">Export Excel</button>
+                    <button id="signout-btn" class="bg-gray-600 text-white px-4 py-2 rounded shadow hover:bg-gray-700 text-sm">Sign Out</button>
+                </div>
+            </header>
+
+            <div class="p-6">
+                <div id="view-overview" class="view-section">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold">Total Balance: <span id="total-balance">₦0.00</span></h2>
+                        <button id="snapshot-btn" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700">Snapshot Balance</button>
+                    </div>
+                    
+                    <div class="bg-white p-6 rounded shadow mt-6">
+                        <h3 class="font-bold border-b pb-2 mb-4">Recent Snapshots</h3>
+                        <div id="snapshot-list" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <p class="text-gray-500 italic">Loading snapshots...</p>
+                        </div>
+                    </div>
+                </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
+                            <p class="text-sm text-gray-500">Total Balance</p>
+                            <h3 class="text-xl font-bold" id="total-balance">₦0.00</h3>
+                        </div>
+                        <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
+                            <p class="text-sm text-gray-500">Total Income (Extras)</p>
+                            <h3 class="text-xl font-bold" id="total-income">₦0.00</h3>
+                        </div>
+                        <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
+                            <p class="text-sm text-gray-500">Total Debits</p>
+                            <h3 class="text-xl font-bold" id="total-debits">₦0.00</h3>
+                        </div>
+                        <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
+                            <p class="text-sm text-gray-500">Active Members</p>
+                            <h3 class="text-xl font-bold" id="total-members">0</h3>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-members" class="view-section hidden">
+                    <div class="bg-white p-6 rounded shadow mb-6">
+                        <h3 class="font-bold mb-4">Add New Member</h3>
+                        <div class="flex flex-col md:flex-row gap-4">
+                            <input type="email" id="new-user-email" placeholder="Email Address" class="w-full p-2 border rounded">
+                            <input type="text" id="new-user-name" placeholder="Full Name" class="w-full p-2 border rounded">
+                            <button id="btn-add-user" class="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 whitespace-nowrap">Add Member</button>
+                        </div>
+                    </div>
+
+                    <h2 class="text-2xl font-bold mb-4">Individual Ledgers</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div id="members-list" class="bg-white p-4 rounded shadow h-fit">Loading members...</div>
+                        
+                        <div id="member-detail" class="bg-white p-6 rounded shadow hidden md:col-span-2">
+                            <h3 id="member-name-display" class="text-xl font-bold mb-4 border-b pb-2">Member Ledger</h3>
+                            <div id="monthly-grid" class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-transactions" class="view-section hidden">
+                    <h2 class="text-2xl font-bold mb-6">Record Transactions</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="bg-white p-6 rounded shadow border-t-4 border-blue-500">
+                            <h3 class="font-bold mb-4">Add Credit</h3>
+                            <select id="credit-user" class="w-full mb-3 p-2 border rounded"><option value="">Select Member</option></select>
+                            <input type="number" id="credit-amount" placeholder="Amount" class="w-full mb-3 p-2 border rounded">
+                            <button id="btn-process-credit" class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700">Process Credit</button>
+                        </div>
+                        <div class="bg-white p-6 rounded shadow border-t-4 border-red-500">
+                            <h3 class="font-bold mb-4">Add Debit (Purchases)</h3>
+                            <input type="number" id="debit-amount" placeholder="Amount" class="w-full mb-3 p-2 border rounded">
+                            <input type="text" id="debit-reason" placeholder="Reason for debit" class="w-full mb-3 p-2 border rounded">
+                            <button id="btn-process-debit" class="w-full bg-red-600 text-white p-2 rounded hover:bg-red-700">Process Debit</button>
+                        </div>
+                        <div class="bg-white p-6 rounded shadow border-t-4 border-green-500">
+                            <h3 class="font-bold mb-4">Add Income</h3>
+                            <input type="number" id="income-amount" placeholder="Amount" class="w-full mb-3 p-2 border rounded">
+                            <select id="income-source" class="w-full mb-3 p-2 border rounded">
+                                <option value="donation">Donation</option>
+                                <option value="interest">Bank Interest</option>
+                                <option value="gift">Gift</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="text" id="income-reason" placeholder="Type reason..." class="w-full mb-3 p-2 border rounded hidden">
+                            <button id="btn-process-income" class="w-full bg-green-600 text-white p-2 rounded hover:bg-green-700">Process Income</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-audit" class="view-section hidden">
+                    <h2 class="text-2xl font-bold mb-6">System Audit Log</h2>
+                    <div class="bg-white p-6 rounded shadow overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="border-b bg-gray-50">
+                                    <th class="p-3">Date/Time</th>
+                                    <th class="p-3">Admin</th>
+                                    <th class="p-3">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="audit-table-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+</body>
+</html>
