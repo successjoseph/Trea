@@ -96,7 +96,7 @@ function initDataFetch() {
             if (data.type === 'debit') { totalBal += data.amount; totalDeb += Math.abs(data.amount); }
         });
         
-        document.getElementById('total-balance').innerText = `₦${totalBal.toLocaleString()}`;
+        document.querySelectorAll('.total-balance-display').forEach(el => {el.innerText = `₦${totalBal.toLocaleString()}`;});
         document.getElementById('total-income').innerText = `₦${totalInc.toLocaleString()}`;
         document.getElementById('total-debits').innerText = `₦${totalDeb.toLocaleString()}`;
         

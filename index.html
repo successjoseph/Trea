@@ -47,21 +47,21 @@
             <div class="p-6">
                 <div id="view-overview" class="view-section">
                     <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-2xl font-bold">Total Balance: <span id="total-balance">₦0.00</span></h2>
+                        <h2 class="text-2xl font-bold">Total Balance: <span class="total-balance-display">₦0.00</span></h2>
                         <button id="snapshot-btn" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700">Snapshot Balance</button>
                     </div>
                     
-                    <div class="bg-white p-6 rounded shadow mt-6">
+                    <div class="bg-white p-6 rounded shadow mt-6 mb-6">
                         <h3 class="font-bold border-b pb-2 mb-4">Recent Snapshots</h3>
                         <div id="snapshot-list" class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <p class="text-gray-500 italic">Loading snapshots...</p>
                         </div>
                     </div>
-                </div>
+                    
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                         <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
                             <p class="text-sm text-gray-500">Total Balance</p>
-                            <h3 class="text-xl font-bold" id="total-balance">₦0.00</h3>
+                            <h3 class="text-xl font-bold total-balance-display">₦0.00</h3>
                         </div>
                         <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
                             <p class="text-sm text-gray-500">Total Income (Extras)</p>
