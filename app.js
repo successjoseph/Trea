@@ -351,8 +351,8 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
 // --- SNAPSHOT HANDLER ---
 document.getElementById('snapshot-btn').addEventListener('click', async () => {
-    // Grab the current balance text and convert it back to a clean number
-    const totalBalText = document.getElementById('total-balance').innerText;
+    // Grab the current balance text from the first element with the class
+    const totalBalText = document.querySelector('.total-balance-display').innerText;
     const totalBalNumber = Number(totalBalText.replace(/[^0-9.-]+/g,""));
 
     const now = new Date();
