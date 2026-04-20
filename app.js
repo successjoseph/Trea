@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
 import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
 
 const firebaseConfig = {
     apiKey: "AIzaSyAiKCUqdl71v9QiW9HBnfZrljp588H9Csc",
@@ -79,6 +79,22 @@ onAuthStateChanged(auth, async (user) => {
 loginBtn.addEventListener('click', () => {
     const provider = new GoogleAuthProvider();
     signInWithPopup(auth, provider).catch(err => console.error("Auth failed:", err));
+});
+
+// --- PUBLIC DEMO ENTRY HANDLER ---
+document.getElementById('demo-btn').addEventListener('click', () => {
+    currentOrg = 'demo_org';
+    currentAdmin = { 
+        email: `visitor_${Math.floor(Math.random() * 1000)}@demo.com`, 
+        name: 'Demo Visitor', 
+        orgId: currentOrg 
+    };
+    
+    document.getElementById('welcome-msg').innerText = `Demo Mode (Public Sandbox)`;
+    document.getElementById('auth-guard').style.display = 'none';
+    document.getElementById('app-container').classList.remove('hidden');
+    
+    initDataFetch();
 });
 
 // --- REAL-TIME DATA FETCHING & MATH ---
@@ -264,6 +280,7 @@ document.getElementById('btn-process-credit').addEventListener('click', async ()
         });
         await logAudit(`Added ₦${amount} credit to ${user}`);
         alert("Credit processed!");
+        enforceRollingLimit();
         document.getElementById('credit-amount').value = '';
     } catch (e) {
         console.error("Error adding credit: ", e);
@@ -291,6 +308,7 @@ document.getElementById('btn-process-debit').addEventListener('click', async () 
         alert("Debit processed!");
         document.getElementById('debit-amount').value = '';
         document.getElementById('debit-reason').value = '';
+        enforceRollingLimit();
     } catch (e) {
         console.error("Error adding debit: ", e);
         alert("Failed to process debit. Check console.");
@@ -320,6 +338,7 @@ document.getElementById('btn-process-income').addEventListener('click', async ()
         alert("Income processed!");
         document.getElementById('income-amount').value = '';
         document.getElementById('income-reason').value = '';
+        enforceRollingLimit();
     } catch (e) {
         console.error("Error adding income: ", e);
         alert("Failed to process income. Check console.");
@@ -373,3 +392,21 @@ document.getElementById('snapshot-btn').addEventListener('click', async () => {
         alert("Failed to save snapshot. Check console.");
     }
 });
+
+// --- ROLLING 20 DELETION LOGIC ---
+async function enforceRollingLimit() {
+    if (currentOrg !== 'demo_org') return; // Only apply this rule to the demo
+    
+    const q = query(collection(db, `orgs/${currentOrg}/transactions`), orderBy("timestamp", "asc"));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.size > 20) {
+        // Calculate how many documents need to be removed
+        const overflow = snapshot.size - 20;
+        const docsToDelete = snapshot.docs.slice(0, overflow);
+        
+        docsToDelete.forEach(async (docSnapshot) => {
+            await deleteDoc(doc(db, `orgs/${currentOrg}/transactions`, docSnapshot.id));
+        });
+    }
+}

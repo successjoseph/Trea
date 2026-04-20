@@ -9,10 +9,20 @@
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans">
 
-    <div id="auth-guard" class="h-screen flex flex-col items-center justify-center bg-white z-50 absolute w-full">
-        <div id="loading-text" class="text-xl font-semibold mb-4">Authenticating Admin...</div>
-        <button id="login-btn" class="hidden bg-blue-600 text-white px-6 py-2 rounded shadow hover:bg-blue-700">Login with Google</button>
-        <div id="rejected-text" class="hidden mt-4 text-2xl font-bold text-red-600">You are not an admin. Please exit the software.</div>
+    <div id="auth-guard" class="h-screen flex flex-col items-center justify-center z-50 absolute w-full bg-cover bg-center" style="background-image: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), url('./image.png');">
+        
+        <h1 class="text-6xl md:text-8xl font-extrabold tracking-tighter mb-8 drop-shadow-2xl">
+            <span class="text-blue-500">T</span><span class="text-white">R</span><span class="text-red-500">E</span><span class="text-green-500">A</span>
+        </h1>
+
+        <div id="loading-text" class="text-xl font-semibold mb-6 text-gray-200">Authenticating Admin...</div>
+        
+        <div class="flex gap-4">
+            <button id="login-btn" class="hidden bg-blue-600 text-white px-8 py-3 rounded-lg shadow-lg hover:bg-blue-700 transition font-bold">Login with Google</button>
+            <button id="demo-btn" class="bg-white/10 backdrop-blur-md text-white border border-white/20 px-8 py-3 rounded-lg shadow-lg hover:bg-white/20 transition font-bold">Try Live Demo</button>
+        </div>
+        
+        <div id="rejected-text" class="hidden mt-6 text-xl font-bold text-red-500 bg-red-500/10 px-6 py-3 rounded-lg border border-red-500/20">You are not an admin. Please exit the software.</div>
     </div>
 
     <div id="app-container" class="hidden flex h-screen overflow-hidden">
