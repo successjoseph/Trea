@@ -1,0 +1,341 @@
+rules_version = '2';
+
+// =============================================================================
+// Trea - Firestore security rules
+// =============================================================================
+//
+// This file, not the browser, is the security boundary. Everything `rbac.js`
+// does is a UX convenience; if these rules disagree with the client, these rules
+// win, and they are written on the assumption that an attacker is calling the
+// Firestore REST API directly with a valid Google token and no app at all.
+//
+// Deploy with:  firebase deploy --only firestore:rules
+//
+// The three properties worth stating explicitly:
+//
+//   1. A pending transaction cannot have its window extended. `releaseAtMs` is
+//      immutable after creation, so no client can hold an entry out of the
+//      balance indefinitely or re-open a closed correction window.
+//   2. Audit entries are append-only. There is no update or delete rule for
+//      them at all, which is what makes the hash chain meaningful.
+//   3. Only an owner can change roles, and no one can change their own.
+//
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- helpers
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function email() {
+      return request.auth.token.email.lower();
+    }
+
+    function roleDoc(org) {
+      return get(/databases/$(database)/documents/orgs/$(org)/roles/$(email()));
+    }
+
+    function hasRoleDoc(org) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/orgs/$(org)/roles/$(email()));
+    }
+
+    function roleOf(org) {
+      return hasRoleDoc(org) ? roleDoc(org).data.role : 'none';
+    }
+
+    function active(org) {
+      return hasRoleDoc(org) && roleDoc(org).data.get('status', 'active') != 'suspended';
+    }
+
+    // The permission matrix, mirrored from src/core/rbac.js. Kept as literal
+    // lists rather than a clever encoding so a reviewer can read it directly.
+    function rolePerms(role) {
+      return role == 'owner' ? [
+        'tx.create', 'tx.correct', 'tx.correct.any', 'tx.void', 'tx.approve',
+        'member.manage', 'snapshot.create', 'budget.manage', 'goal.manage',
+        'recurring.manage', 'reconcile.manage', 'audit.view', 'data.export',
+        'data.import', 'roles.manage', 'settings.manage'
+      ] : role == 'admin' ? [
+        'tx.create', 'tx.correct', 'tx.void', 'member.manage', 'snapshot.create',
+        'budget.manage', 'goal.manage', 'recurring.manage', 'audit.view',
+        'data.export', 'data.import'
+      ] : role == 'trustee' ? [
+        'tx.approve', 'reconcile.manage', 'audit.view', 'data.export', 'snapshot.create'
+      ] : [];
+    }
+
+    function can(org, perm) {
+      return active(org)
+        && (
+          (perm in rolePerms(roleOf(org)) || perm in roleDoc(org).data.get('grants', []))
+          && !(perm in roleDoc(org).data.get('denies', []))
+        );
+    }
+
+    function isOwner(org) {
+      return active(org) && roleOf(org) == 'owner';
+    }
+
+    // Any member of the org may read the org's data. Read access is not
+    // segmented further: a viewer is meant to see the books.
+    function member(org) {
+      return active(org);
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function unchanged(field) {
+      return !(field in changedKeys());
+    }
+
+    // ------------------------------------------------------------------ users
+    //
+    // The pointer that resolves an email to an org. Readable only by its owner
+    // (so nobody can enumerate the user base) and writable only by an owner of
+    // the org being pointed at.
+
+    match /users/{userEmail} {
+      allow read: if signedIn() && email() == userEmail;
+
+      allow write: if signedIn()
+        && request.resource.data.orgId is string
+        && isOwner(request.resource.data.orgId)
+        // An owner cannot rewrite their own pointer and self-escalate.
+        && userEmail != email();
+
+      allow delete: if signedIn()
+        && resource.data.orgId is string
+        && isOwner(resource.data.orgId)
+        && userEmail != email();
+    }
+
+    // ------------------------------------------------------------------- orgs
+
+    match /orgs/{org} {
+      allow read: if member(org);
+      allow write: if isOwner(org);
+
+      // ------------------------------------------------------------- settings
+      match /meta/{docId} {
+        allow read: if member(org);
+        allow write: if can(org, 'settings.manage');
+      }
+
+      // ---------------------------------------------------------------- roles
+      //
+      // Readable by everyone in the org - knowing who can do what is part of
+      // governance. Writable only by an owner, never on their own record.
+
+      match /roles/{personEmail} {
+        allow read: if member(org);
+
+        allow create: if can(org, 'roles.manage')
+          && personEmail != email()
+          && request.resource.data.role in ['owner', 'admin', 'trustee', 'viewer']
+          && request.resource.data.email == personEmail;
+
+        allow update: if can(org, 'roles.manage')
+          && personEmail != email()
+          && request.resource.data.role in ['owner', 'admin', 'trustee', 'viewer'];
+
+        allow delete: if can(org, 'roles.manage')
+          && personEmail != email();
+      }
+
+      // -------------------------------------------------------------- members
+
+      match /members/{memberEmail} {
+        allow read: if member(org);
+        allow create, update: if can(org, 'member.manage')
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80;
+        // Deletion is permitted so the app can remove a member with no history;
+        // members carrying transactions are archived by the client instead.
+        allow delete: if can(org, 'member.manage');
+      }
+
+      // --------------------------------------------------------- transactions
+      //
+      // The most carefully constrained collection in the file. A transaction is
+      // created pending, may be corrected only inside its own stated window,
+      // and after that may never have its money fields touched again.
+
+      function txAmountOk(data) {
+        return data.amountMinor is int
+          && data.amountMinor != 0
+          && data.amountMinor > -100000000000000
+          && data.amountMinor < 100000000000000;
+      }
+
+      function txShapeOk(data) {
+        return txAmountOk(data)
+          && data.type in ['credit', 'debit', 'income', 'adjustment']
+          && data.userId is string
+          && data.get('reason', '') is string
+          && data.get('reason', '').size() <= 400
+          && data.get('note', '') is string
+          && data.get('note', '').size() <= 1000
+          && data.monthKey is string
+          && data.monthKey.size() == 7
+          // Debits must be negative and credits positive; otherwise a mis-signed
+          // row silently inverts the balance.
+          && (data.type != 'debit' || data.amountMinor < 0)
+          && (data.type != 'credit' || data.amountMinor > 0);
+      }
+
+      // The correction window is bounded here, not just in the client. Without
+      // this, a hand-crafted request could set releaseAtMs a year out and park
+      // money outside the balance indefinitely.
+      function windowOk(data) {
+        return data.releaseAtMs is int
+          && data.releaseAtMs > request.time.toMillis()
+          && data.releaseAtMs < request.time.toMillis() + 310000;
+      }
+
+      match /transactions/{txId} {
+        allow read: if member(org);
+
+        allow create: if can(org, 'tx.create')
+          && txShapeOk(request.resource.data)
+          && windowOk(request.resource.data)
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdBy == email()
+          && request.resource.data.get('approvedAtMs', null) == null;
+
+        // Three legitimate kinds of update, and nothing else.
+        //
+        // (a) Correction, inside the window, by someone entitled to make it.
+        allow update: if (
+            resource.data.status == 'pending'
+            && request.time.toMillis() < resource.data.releaseAtMs
+            && (
+              (resource.data.createdBy == email() && can(org, 'tx.correct'))
+              || can(org, 'tx.correct.any')
+            )
+            && txShapeOk(request.resource.data)
+            // The window itself, the author, the type and the creation time are
+            // all frozen: a correction changes the figures, not the provenance.
+            && unchanged('releaseAtMs')
+            && unchanged('createdBy')
+            && unchanged('createdAtMs')
+            && unchanged('type')
+            && unchanged('status')
+            && unchanged('approvalRequired')
+          )
+          // (b) Maturing a pending entry once its window has closed. Any member
+          //     may do this; it only writes what the derived state already says.
+          || (
+            member(org)
+            && resource.data.status == 'pending'
+            && request.time.toMillis() >= resource.data.releaseAtMs
+            && request.resource.data.status in ['active', 'held']
+            && changedKeys().hasOnly(['status', 'releasedAtMs'])
+          )
+          // (c) Approval, by a second person who holds tx.approve.
+          || (
+            can(org, 'tx.approve')
+            && resource.data.approvalRequired == true
+            && resource.data.get('approvedAtMs', null) == null
+            && resource.data.createdBy != email()
+            && request.resource.data.approvedBy == email()
+            && changedKeys().hasOnly(['approvedBy', 'approvedAtMs', 'status'])
+          )
+          // (d) Back-linking an original to the reversal that cancels it.
+          || (
+            can(org, 'tx.void')
+            && changedKeys().hasOnly(['reversedById', 'reversedAtMs', 'reversedBy'])
+            && request.resource.data.reversedBy == email()
+          );
+
+        // Deletable only while pending - that is, only while it has never
+        // counted towards anything. Once released, the ledger is append-only
+        // and mistakes are handled with a reversing entry.
+        allow delete: if resource.data.status == 'pending'
+          && request.time.toMillis() < resource.data.releaseAtMs
+          && (
+            (resource.data.createdBy == email() && can(org, 'tx.correct'))
+            || can(org, 'tx.correct.any')
+          );
+      }
+
+      // ------------------------------------------------------------ snapshots
+      //
+      // Any member may create one, because the month rollover has to work for
+      // whoever happens to record the first entry of a new month. The document
+      // ID is the month key, so a race writes the same document rather than a
+      // duplicate. Sealed months can never be edited or deleted.
+
+      match /snapshots/{monthKey} {
+        allow read: if member(org);
+
+        allow create: if member(org)
+          && request.resource.data.monthKey == monthKey
+          && request.resource.data.closingBalanceMinor is int;
+
+        // A manual mid-month checkpoint may be overwritten; an auto-sealed month
+        // may not, by anyone.
+        allow update: if can(org, 'snapshot.create')
+          && resource.data.get('auto', true) == false
+          && request.resource.data.get('auto', true) == false;
+
+        allow delete: if false;
+      }
+
+      // ------------------------------------------------------------ audit log
+      //
+      // Append-only, with no exception for owners. An audit log an
+      // administrator can edit is not an audit log.
+
+      match /audit_logs/{entryId} {
+        allow read: if can(org, 'audit.view');
+        allow create: if member(org)
+          && request.resource.data.actorEmail == email()
+          && request.resource.data.action is string
+          && request.resource.data.action.size() <= 500
+          && request.resource.data.hash is string;
+        allow update, delete: if false;
+      }
+
+      // ------------------------------------------------- planning and records
+
+      match /budgets/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'budget.manage');
+      }
+
+      match /goals/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'goal.manage');
+      }
+
+      match /recurring/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'recurring.manage');
+      }
+
+      match /reconciliations/{id} {
+        allow read: if member(org);
+        allow create: if can(org, 'reconcile.manage')
+          && request.resource.data.by == email();
+        // Evidence, not a working document.
+        allow update, delete: if false;
+      }
+    }
+
+    // Anything not matched above is denied. Stated explicitly so adding a new
+    // collection fails closed rather than inheriting an accidental allow.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

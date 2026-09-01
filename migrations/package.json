@@ -1,0 +1,9 @@
+{
+  "name": "trea-migrations",
+  "private": true,
+  "type": "module",
+  "description": "One-off admin scripts. Not part of the deployed app -- never imported by src/.",
+  "dependencies": {
+    "firebase-admin": "^14.3.0"
+  }
+}

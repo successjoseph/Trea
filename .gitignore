@@ -1,1 +1,13 @@
 /.vscode/
+
+# Firebase service account keys -- never commit these.
+*firebase-adminsdk*.json
+serviceAccountKey.json
+/trea-pro-firebase-adminsdk-fbsvc-aa00f654de.json
+
+# Local backups taken before running data migrations.
+/migrations/backups/
+
+# Dependencies installed for one-off admin scripts -- reinstalled via
+# `npm install` inside migrations/, never shipped with the app itself.
+/migrations/node_modules/
