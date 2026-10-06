@@ -1,0 +1,448 @@
+rules_version = '2';
+
+// =============================================================================
+// Trea - Firestore security rules, v3 (CANDIDATE, NOT DEPLOYED)
+// =============================================================================
+//
+// Differences from firestore.rules (v2):
+//   - Identity is the Firebase uid. Roles live at orgs/{org}/roles/{uid}.
+//   - users/{email} pointer is gone. Membership lives at users/{uid}/memberships.
+//   - Joining an org is by one-time passcode (passcodes/{sha256}), not by an
+//     owner writing a role for an email address.
+//   - Records (transactions, audit entries, etc.) still store the author's
+//     email in their existing fields, so historic data stays readable.
+//
+// DEPLOY GATE. Do not deploy until ALL of these are true:
+//   1. orgs/MOJ and orgs/Thrivers Trybe parent documents exist. The org-creation
+//      rule below only refuses to create an owner role when the org document
+//      already exists, so a legacy org with no parent document would otherwise
+//      accept an owner role from any signed-in user.
+//   2. Every existing roles document has been copied to roles/{uid}.
+//   3. The app has been updated to read memberships and passcodes.
+//
+// Deploy with:  firebase deploy --only firestore:rules  (after copying this
+// file over firestore.rules, once the gate above is satisfied)
+//
+// Properties kept from v2:
+//   1. A pending transaction cannot have its window extended.
+//   2. Audit entries are append-only.
+//   3. Only an owner changes roles, and no one changes their own.
+//
+// New properties:
+//   4. A passcode is single use, bound to one email, expires 35 minutes after
+//      creation (server time), and can only issue a role strictly below the
+//      issuer's own.
+//   5. Owners cannot be created or changed by roles writes. Ownership is only
+//      created by org creation.
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- helpers
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function email() {
+      return request.auth.token.email.lower();
+    }
+
+    function roleDoc(org) {
+      return get(/databases/$(database)/documents/orgs/$(org)/roles/$(uid()));
+    }
+
+    function hasRoleDoc(org) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/orgs/$(org)/roles/$(uid()));
+    }
+
+    function roleOf(org) {
+      return hasRoleDoc(org) ? roleDoc(org).data.role : 'none';
+    }
+
+    function active(org) {
+      return hasRoleDoc(org) && roleDoc(org).data.get('status', 'active') != 'suspended';
+    }
+
+    // Mirrors src/core/rbac.js. Literal lists so a reviewer can read them.
+    function rolePerms(role) {
+      return role == 'owner' ? [
+        'tx.create', 'tx.correct', 'tx.correct.any', 'tx.void', 'tx.approve',
+        'member.manage', 'snapshot.create', 'budget.manage', 'goal.manage',
+        'recurring.manage', 'reconcile.manage', 'audit.view', 'data.export',
+        'data.import', 'roles.manage', 'settings.manage', 'invite.create'
+      ] : role == 'admin' ? [
+        'tx.create', 'tx.correct', 'tx.void', 'member.manage', 'snapshot.create',
+        'budget.manage', 'goal.manage', 'recurring.manage', 'audit.view',
+        'data.export', 'data.import', 'invite.create'
+      ] : role == 'trustee' ? [
+        'tx.approve', 'reconcile.manage', 'audit.view', 'data.export', 'snapshot.create'
+      ] : [];
+    }
+
+    function can(org, perm) {
+      return active(org)
+        && (
+          (perm in rolePerms(roleOf(org)) || perm in roleDoc(org).data.get('grants', []))
+          && !(perm in roleDoc(org).data.get('denies', []))
+        );
+    }
+
+    function isOwner(org) {
+      return active(org) && roleOf(org) == 'owner';
+    }
+
+    function member(org) {
+      return active(org);
+    }
+
+    // Strict ordering used for the role ceiling. Higher outranks lower.
+    function rank(role) {
+      return role == 'owner' ? 4
+        : role == 'admin' ? 3
+        : role == 'trustee' ? 2
+        : role == 'viewer' ? 1
+        : 0;
+    }
+
+    // Issuing and changing roles: strictly below the issuer's own role.
+    function canIssue(org, role) {
+      return can(org, 'invite.create') && rank(role) < rank(roleOf(org));
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function unchanged(field) {
+      return !(field in changedKeys());
+    }
+
+    function passcodePath(pid) {
+      return /databases/$(database)/documents/passcodes/$(pid);
+    }
+
+    // True when the passcode is pending, bound to this email, unexpired, for
+    // this org and role, and its issuer still outranks the role being granted.
+    function redeemOk(org, role, pid) {
+      return exists(passcodePath(pid))
+        && get(passcodePath(pid)).data.orgId == org
+        && get(passcodePath(pid)).data.role == role
+        && get(passcodePath(pid)).data.status == 'pending'
+        && get(passcodePath(pid)).data.boundEmail == email()
+        && request.time.toMillis() < get(passcodePath(pid)).data.expiresAtMs
+        && exists(/databases/$(database)/documents/orgs/$(org)/roles/$(get(passcodePath(pid)).data.createdByUid))
+        && rank(role) < rank(get(/databases/$(database)/documents/orgs/$(org)/roles/$(get(passcodePath(pid)).data.createdByUid)).data.role);
+    }
+
+    // ------------------------------------------------------------ user profile
+
+    match /users/{userId} {
+      allow read: if signedIn() && userId == uid();
+
+      allow create, update: if signedIn()
+        && userId == uid()
+        && request.resource.data.email == email()
+        && request.resource.data.keys().hasOnly(['email', 'name', 'createdAtMs'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 80;
+
+      allow delete: if false;
+
+      // ------------------------------------------------------- memberships
+      //
+      // Written only as part of joining: a passcode redemption, or creating a
+      // new org as its owner. Never edited, and the user may leave by deleting.
+
+      match /memberships/{orgId} {
+        allow read: if signedIn() && userId == uid();
+
+        allow create: if signedIn()
+          && userId == uid()
+          && request.resource.data.orgId == orgId
+          && request.resource.data.status == 'active'
+          && request.resource.data.role in ['owner', 'admin', 'trustee', 'viewer']
+          && (
+            // Joined with a passcode.
+            (request.resource.data.role != 'owner'
+              && redeemOk(orgId, request.resource.data.role, request.resource.data.passcodeId))
+            // Created an org as its owner. Only while the org does not exist yet.
+            || (request.resource.data.role == 'owner'
+              && !exists(/databases/$(database)/documents/orgs/$(orgId)))
+          );
+
+        allow update: if false;
+        allow delete: if signedIn() && userId == uid();
+      }
+    }
+
+    // ------------------------------------------------------------------ passcodes
+    //
+    // Document ID is the SHA-256 of the normalised code. Nobody can list codes
+    // except the issuer's org owner; the bound email gets the single document
+    // it needs to redeem, and the rules never reveal anything else.
+
+    match /passcodes/{hash} {
+      allow get: if signedIn()
+        && (resource.data.createdByUid == uid() || resource.data.boundEmail == email());
+
+      allow list: if signedIn() && isOwner(resource.data.orgId);
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'role', 'boundEmail', 'createdByUid', 'createdAtMs', 'expiresAtMs', 'status'
+        ])
+        && request.resource.data.createdByUid == uid()
+        && request.resource.data.status == 'pending'
+        // Browsers cannot know server time exactly, so creation time is accepted
+        // within two minutes of the server clock. The expiry is fixed from it.
+        && request.resource.data.createdAtMs > request.time.toMillis() - 120000
+        && request.resource.data.createdAtMs < request.time.toMillis() + 120000
+        && request.resource.data.expiresAtMs == request.resource.data.createdAtMs + 2100000
+        && request.resource.data.boundEmail is string
+        && request.resource.data.boundEmail == request.resource.data.boundEmail.lower()
+        && request.resource.data.boundEmail.matches('^[^@ ]+@[^@ ]+\\.[^@ ]+$')
+        && canIssue(request.resource.data.orgId, request.resource.data.role);
+
+      // (a) Redemption by the bound email. Single use: only pending to used.
+      allow update: if signedIn()
+        && resource.data.status == 'pending'
+        && request.time.toMillis() < resource.data.expiresAtMs
+        && (
+          (
+            resource.data.boundEmail == email()
+            && request.resource.data.status == 'used'
+            && request.resource.data.usedByUid == uid()
+            && request.resource.data.usedAtMs > request.time.toMillis() - 120000
+            && request.resource.data.usedAtMs < request.time.toMillis() + 120000
+            && changedKeys().hasOnly(['status', 'usedByUid', 'usedAtMs'])
+          )
+          // (b) Revocation by the issuer or an owner of the org.
+          || (
+            request.resource.data.status == 'revoked'
+            && changedKeys().hasOnly(['status'])
+            && (resource.data.createdByUid == uid() || isOwner(resource.data.orgId))
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------- orgs
+
+    match /orgs/{org} {
+      allow read: if member(org);
+
+      // Creating an org: the signed-in user becomes its first owner in the same
+      // batch (see roles and memberships). Only while the org does not exist.
+      allow create: if signedIn()
+        && !exists(/databases/$(database)/documents/orgs/$(org))
+        && request.resource.data.createdByUid == uid()
+        && request.resource.data.type in ['personal', 'company'];
+
+      allow update: if isOwner(org)
+        && request.resource.data.createdByUid == resource.data.createdByUid;
+
+      allow delete: if false;
+
+      // ------------------------------------------------------------- settings
+      match /meta/{docId} {
+        allow read: if member(org);
+        allow write: if can(org, 'settings.manage');
+      }
+
+      // ---------------------------------------------------------------- roles
+      //
+      // Keyed by uid. Created only by org creation (first owner) or by a
+      // passcode redemption. Changed or removed only by an owner, only for
+      // someone strictly below them, and never to or from owner.
+
+      match /roles/{personUid} {
+        allow read: if member(org);
+
+        allow create: if personUid == uid()
+          && request.resource.data.uid == uid()
+          && request.resource.data.status == 'active'
+          && (
+            // First owner of a new org.
+            (request.resource.data.role == 'owner'
+              && !exists(/databases/$(database)/documents/orgs/$(org)))
+            // Joined with a passcode.
+            || (request.resource.data.role != 'owner'
+              && redeemOk(org, request.resource.data.role, request.resource.data.passcodeId))
+          );
+
+        allow update: if can(org, 'roles.manage')
+          && personUid != uid()
+          && rank(resource.data.role) < rank(roleOf(org))
+          && rank(request.resource.data.role) < rank(roleOf(org))
+          && request.resource.data.role != 'owner'
+          && request.resource.data.uid == personUid
+          && unchanged('uid');
+
+        allow delete: if can(org, 'roles.manage')
+          && personUid != uid()
+          && rank(resource.data.role) < rank(roleOf(org));
+      }
+
+      // -------------------------------------------------------------- members
+
+      match /members/{memberEmail} {
+        allow read: if member(org);
+        allow create, update: if can(org, 'member.manage')
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80;
+        allow delete: if can(org, 'member.manage');
+      }
+
+      // --------------------------------------------------------- transactions
+
+      function txAmountOk(data) {
+        return data.amountMinor is int
+          && data.amountMinor != 0
+          && data.amountMinor > -100000000000000
+          && data.amountMinor < 100000000000000;
+      }
+
+      function txShapeOk(data) {
+        return txAmountOk(data)
+          && data.type in ['credit', 'debit', 'income', 'adjustment']
+          && data.userId is string
+          && data.get('reason', '') is string
+          && data.get('reason', '').size() <= 400
+          && data.get('note', '') is string
+          && data.get('note', '').size() <= 1000
+          && data.monthKey is string
+          && data.monthKey.size() == 7
+          && (data.type != 'debit' || data.amountMinor < 0)
+          && (data.type != 'credit' || data.amountMinor > 0);
+      }
+
+      function windowOk(data) {
+        return data.releaseAtMs is int
+          && data.releaseAtMs > request.time.toMillis()
+          && data.releaseAtMs < request.time.toMillis() + 310000;
+      }
+
+      match /transactions/{txId} {
+        allow read: if member(org);
+
+        allow create: if can(org, 'tx.create')
+          && txShapeOk(request.resource.data)
+          && windowOk(request.resource.data)
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdBy == email()
+          && request.resource.data.get('approvedAtMs', null) == null;
+
+        allow update: if (
+            resource.data.status == 'pending'
+            && request.time.toMillis() < resource.data.releaseAtMs
+            && (
+              (resource.data.createdBy == email() && can(org, 'tx.correct'))
+              || can(org, 'tx.correct.any')
+            )
+            && txShapeOk(request.resource.data)
+            && unchanged('releaseAtMs')
+            && unchanged('createdBy')
+            && unchanged('createdAtMs')
+            && unchanged('type')
+            && unchanged('status')
+            && unchanged('approvalRequired')
+          )
+          || (
+            member(org)
+            && resource.data.status == 'pending'
+            && request.time.toMillis() >= resource.data.releaseAtMs
+            && request.resource.data.status in ['active', 'held']
+            && changedKeys().hasOnly(['status', 'releasedAtMs'])
+          )
+          || (
+            can(org, 'tx.approve')
+            && resource.data.approvalRequired == true
+            && resource.data.get('approvedAtMs', null) == null
+            && resource.data.createdBy != email()
+            && request.resource.data.approvedBy == email()
+            && changedKeys().hasOnly(['approvedBy', 'approvedAtMs', 'status'])
+          )
+          || (
+            can(org, 'tx.void')
+            && changedKeys().hasOnly(['reversedById', 'reversedAtMs', 'reversedBy'])
+            && request.resource.data.reversedBy == email()
+          );
+
+        allow delete: if resource.data.status == 'pending'
+          && request.time.toMillis() < resource.data.releaseAtMs
+          && (
+            (resource.data.createdBy == email() && can(org, 'tx.correct'))
+            || can(org, 'tx.correct.any')
+          );
+      }
+
+      // ------------------------------------------------------------ snapshots
+
+      match /snapshots/{monthKey} {
+        allow read: if member(org);
+
+        allow create: if member(org)
+          && request.resource.data.monthKey == monthKey
+          && request.resource.data.closingBalanceMinor is int;
+
+        allow update: if can(org, 'snapshot.create')
+          && resource.data.get('auto', true) == false
+          && request.resource.data.get('auto', true) == false;
+
+        allow delete: if false;
+      }
+
+      // ------------------------------------------------------------ audit log
+
+      match /audit_logs/{entryId} {
+        allow read: if can(org, 'audit.view');
+        allow create: if member(org)
+          && request.resource.data.actorEmail == email()
+          && request.resource.data.action is string
+          && request.resource.data.action.size() <= 500
+          && request.resource.data.hash is string;
+        allow update, delete: if false;
+      }
+
+      // ------------------------------------------------- planning and records
+
+      match /budgets/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'budget.manage');
+      }
+
+      match /goals/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'goal.manage');
+      }
+
+      match /recurring/{id} {
+        allow read: if member(org);
+        allow write: if can(org, 'recurring.manage');
+      }
+
+      match /reconciliations/{id} {
+        allow read: if member(org);
+        allow create: if can(org, 'reconcile.manage')
+          && request.resource.data.by == email();
+        allow update, delete: if false;
+      }
+    }
+
+    // Anything not matched above is denied. Fails closed for new collections.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

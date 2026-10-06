@@ -1,16 +1,17 @@
 /**
  * Sign-in, role resolution and session hygiene.
  *
- * Access resolves in two hops: `users/{email}` says which org you belong to,
- * and `orgs/{orgId}/roles/{email}` says what you may do inside it. Splitting
- * them means an owner can change someone's permissions without touching the
- * global user record, and the org's permission list is readable as one
- * collection in the roles console.
+ * Access is per org. `users/{uid}/memberships` says which orgs you belong to,
+ * and `orgs/{orgId}/roles/{uid}` says what you may do inside each one. The
+ * switcher chooses the active org; the rules check every request against the
+ * org it targets, so a session can never reach another org's data.
  */
 import {
     auth, db, doc, getDoc, paths,
     onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-    setPersistence, browserSessionPersistence, reauthenticateWithPopup
+    setPersistence, browserSessionPersistence, reauthenticateWithPopup,
+    createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification,
+    sendPasswordResetEmail, reload
 } from '../core/fb.js';
 import { state, setSession } from '../core/state.js';
 import { ROLES } from '../core/rbac.js';
@@ -45,61 +46,73 @@ export function signInWithGoogle() {
     return signInWithPopup(auth, provider);
 }
 
+export function signInWithEmail(email, password) {
+    return signInWithEmailAndPassword(auth, String(email).trim(), password);
+}
+
+/**
+ * Create an account and send the verification email. Nothing is granted until
+ * the address is verified: the rules refuse every read and write for an
+ * unverified token, so an account created with someone else's address is inert.
+ */
+export async function signUpWithEmail(email, password) {
+    const cred = await createUserWithEmailAndPassword(auth, String(email).trim(), password);
+    await sendEmailVerification(cred.user);
+    return cred.user;
+}
+
+export function resendVerification(user) {
+    return sendEmailVerification(user);
+}
+
+/** Refresh the cached token so a verification done in another tab is picked up. */
+export function reloadUser(user) {
+    return reload(user);
+}
+
+export function sendPasswordReset(email) {
+    return sendPasswordResetEmail(auth, String(email).trim());
+}
+
 export function signOutNow() {
     stopIdleWatch();
     return signOut(auth);
 }
 
 /**
- * Resolve what this signed-in user may do. Returns null when they have no
- * access at all, which the caller renders as the rejection screen.
+ * Resolve what this user may do in one org. Returns null when they hold no role
+ * there (the membership is stale or has been revoked), which the caller treats
+ * as "not a member of that org".
+ *
+ * The role document is keyed by uid, so this is one read, and it fails closed:
+ * if the read is refused, the user gets no access rather than a fallback.
  */
-export async function resolveAccess(user) {
+export async function resolveAccess(user, orgId) {
     const email = String(user.email ?? '').toLowerCase();
-    if (!email) return null;
+    if (!email || !orgId) return null;
 
-    const userDoc = await getDoc(doc(db, paths.user(email)));
-    if (!userDoc.exists()) return null;
+    const roleSnap = await getDoc(doc(db, paths.role(orgId, user.uid)));
+    if (!roleSnap.exists()) return null;
 
-    const userData = userDoc.data();
-    const orgId = userData.orgId;
-    if (!orgId) return null;
-
-    let role = null, grants = [], denies = [], status = 'active', name = userData.name;
-
-    try {
-        const roleDoc = await getDoc(doc(db, paths.role(orgId, email)));
-        if (roleDoc.exists()) {
-            const roleData = roleDoc.data();
-            role = roleData.role;
-            grants = roleData.grants ?? [];
-            denies = roleData.denies ?? [];
-            status = roleData.status ?? 'active';
-            name = roleData.name ?? name;
-        }
-    } catch (error) {
-        console.warn('[session] roles document unreadable, falling back to the user record', error);
-    }
-
-    // Orgs created before RBAC existed only have `users/{email}.role === 'admin'`.
-    // Honour that rather than locking an existing treasury out of its own data.
-    if (!role) role = userData.role === 'admin' ? ROLES.ADMIN : userData.role;
+    const data = roleSnap.data();
+    const role = data.role;
     if (!Object.values(ROLES).includes(role)) return null;
-    if (status === 'suspended') {
-        return { email, name: name || email, orgId, role, grants, denies, status, suspended: true };
-    }
 
-    return {
+    const status = data.status ?? 'active';
+    const session = {
+        uid: user.uid,
         email,
-        name: name || email.split('@')[0],
+        name: data.name || email.split('@')[0],
         orgId,
         role,
-        grants,
-        denies,
+        grants: data.grants ?? [],
+        denies: data.denies ?? [],
         status,
         demo: false,
         signedInAtMs: now()
     };
+    if (status === 'suspended') return { ...session, suspended: true };
+    return session;
 }
 
 /** Enter the local-only demo sandbox. Touches no remote data at all. */
@@ -137,29 +150,18 @@ export function watchAuth(handlers) {
  * This warns a minute ahead and lets the user stay, which is both kinder and
  * safer - a surprise sign-out mid-entry teaches people to disable the feature.
  */
+let idleStarted = false;
+
 export function startIdleWatch() {
-    const timeoutMs = Number(state.org?.idleTimeoutMs) || DEFAULT_SETTINGS.idleTimeoutMs;
-    const warnAtMs = Math.max(30000, timeoutMs - 60000);
+    // Switching orgs calls this again. Listeners are attached once; the timer
+    // is simply restarted from the new org's timeout.
+    if (idleStarted) {
+        resetIdle();
+        return;
+    }
+    idleStarted = true;
 
-    const reset = () => {
-        clearTimeout(idleTimer);
-        clearTimeout(warnTimer);
-        warnTimer = setTimeout(async () => {
-            const stay = await confirmDialog({
-                title: 'Still there?',
-                body: 'You will be signed out in about a minute for security. Anything you have already saved is safe.',
-                confirmLabel: 'Keep me signed in',
-                cancelLabel: 'Sign out now'
-            });
-            if (stay) reset();
-            else signOutNow();
-        }, warnAtMs);
-
-        idleTimer = setTimeout(() => {
-            toast('Signed out after a period of inactivity.', 'warn', 8000);
-            signOutNow();
-        }, timeoutMs);
-    };
+    const reset = resetIdle;
 
     // `passive` avoids blocking scroll, and pointer/key/scroll together cover
     // every way a person can be present without being noisy about it.
@@ -167,6 +169,31 @@ export function startIdleWatch() {
         window.addEventListener(event, reset, { passive: true });
     }
     reset();
+}
+
+function resetIdle() {
+    // Nobody to time out once signed out; the window listeners outlive sign-out.
+    if (!state.session) return;
+    const timeoutMs = Number(state.org?.idleTimeoutMs) || DEFAULT_SETTINGS.idleTimeoutMs;
+    const warnAtMs = Math.max(30000, timeoutMs - 60000);
+    clearTimeout(idleTimer);
+    clearTimeout(warnTimer);
+
+    warnTimer = setTimeout(async () => {
+        const stay = await confirmDialog({
+            title: 'Still there?',
+            body: 'You will be signed out in about a minute for security. Anything you have already saved is safe.',
+            confirmLabel: 'Keep me signed in',
+            cancelLabel: 'Sign out now'
+        });
+        if (stay) resetIdle();
+        else signOutNow();
+    }, warnAtMs);
+
+    idleTimer = setTimeout(() => {
+        toast('Signed out after a period of inactivity.', 'warn', 8000);
+        signOutNow();
+    }, timeoutMs);
 }
 
 export function stopIdleWatch() {

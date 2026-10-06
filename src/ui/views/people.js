@@ -68,7 +68,7 @@ function peopleCard() {
 
     if (people.length === 0) {
         return card(`${sectionHeader('People with access')}
-            ${emptyState('No role records yet. Anyone signing in resolves through their legacy user record until you add them here.',
+            ${emptyState('Nobody else has joined yet. Invite people with a passcode.',
                 isOwner() ? button('Add the first person', { action: 'people:invite' }) : '')}`);
     }
 
@@ -103,6 +103,33 @@ function peopleCard() {
         ${table({ headers: ['Person', 'Role', 'Overrides', 'Effective', 'Status', 'Added', ''], rows })}`);
 }
 
+function passcodeStatus(p) {
+    if (p.status === 'used') return badge('Used', 'active');
+    if (p.status === 'revoked') return badge('Revoked', 'neutral');
+    if (p.expiresAtMs <= Date.now()) return badge('Expired', 'neutral');
+    return badge('Waiting', 'pending');
+}
+
+function passcodeCard() {
+    const rows = state.passcodes.map((p) => {
+        const live = p.status === 'pending' && p.expiresAtMs > Date.now();
+        return row([
+            `<span class="text-sm">${escapeHtml(p.boundEmail ?? '')}</span>`,
+            badge(ROLE_LABELS[p.role] ?? p.role, ROLE_TONE[p.role] ?? 'neutral'),
+            passcodeStatus(p),
+            `<span class="text-xs text-slate-500 dark:text-slate-400">${escapeHtml(fmtDateTime(p.expiresAtMs))}</span>`,
+            live ? button('Revoke', { action: 'passcode:revoke', data: { hash: p.hash }, tone: 'danger', size: 'sm' }) : '<span class="text-xs text-slate-400">-</span>'
+        ]);
+    });
+
+    return card(`
+        ${sectionHeader('Invite passcodes',
+            'A passcode is shown once, works once, and only for the email it was made for. It expires 35 minutes after it is created.')}
+        ${rows.length === 0
+            ? emptyState('No passcodes yet. Use Grant access to invite someone.')
+            : table({ headers: ['Email', 'Role', 'Status', 'Expires', ''], rows })}`);
+}
+
 function selfCard() {
     const mine = Array.from(effectivePermissions());
     return card(`
@@ -123,6 +150,7 @@ export function render() {
         ${pageTitle('Access control', 'Who can sign in, and exactly what they may do.')}
         <div class="space-y-6">
             ${peopleCard()}
+            ${passcodeCard()}
             ${selfCard()}
             ${matrixCard()}
         </div>`;

@@ -46,7 +46,8 @@ export const PERMISSIONS = {
     'audit.view': 'Read the audit log',
     'data.export': 'Export ledger data',
     'data.import': 'Bulk-import transactions',
-    'roles.manage': 'Add and remove people, change roles',
+    'roles.manage': 'Change roles, suspend and revoke people',
+    'invite.create': 'Issue passcodes to invite people',
     'settings.manage': 'Change org settings'
 };
 
@@ -55,7 +56,7 @@ const MATRIX = {
     admin: [
         'tx.create', 'tx.correct', 'tx.void', 'member.manage', 'snapshot.create',
         'budget.manage', 'goal.manage', 'recurring.manage', 'audit.view',
-        'data.export', 'data.import'
+        'data.export', 'data.import', 'invite.create'
     ],
     trustee: [
         'tx.approve', 'reconcile.manage', 'audit.view', 'data.export', 'snapshot.create'

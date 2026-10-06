@@ -16,6 +16,8 @@ export const state = {
     snapshots: [],
     auditLogs: [],
     roles: [],
+    /** Pending and past passcodes for the active org. Owners only; empty for everyone else. */
+    passcodes: [],
     budgets: [],
     goals: [],
     recurring: [],

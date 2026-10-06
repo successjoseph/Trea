@@ -6,7 +6,7 @@
  * Firestore's own IndexedDB cache handles data offline, and a second cache in
  * front of it would serve stale balances with no way to tell.
  */
-const VERSION = 'trea-v2-1';
+const VERSION = 'trea-v3-0';
 const SHELL = [
     './',
     './index.html',

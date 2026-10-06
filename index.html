@@ -30,31 +30,92 @@
 <body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans antialiased">
 
     <!-- ------------------------------------------------------ Auth gate -->
-    <div id="auth-guard" class="h-full flex flex-col items-center justify-center z-50 fixed inset-0 bg-cover bg-center px-4"
+    <div id="auth-guard" class="h-full flex flex-col items-center justify-center z-50 fixed inset-0 bg-cover bg-center px-4 overflow-y-auto"
         style="background-image: linear-gradient(rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.92)), url('./image.png');">
 
-        <h1 class="text-6xl md:text-8xl font-extrabold tracking-tighter mb-3 drop-shadow-2xl">
+        <h1 class="text-6xl md:text-7xl font-extrabold tracking-tighter mb-2 drop-shadow-2xl">
             <span class="text-blue-500">T</span><span class="text-white">R</span><span class="text-red-500">E</span><span class="text-green-500">A</span>
         </h1>
-        <p class="text-slate-300 text-sm mb-8 text-center max-w-md">
+        <p class="text-slate-300 text-sm mb-6 text-center max-w-md">
             A treasury that seals its own months, holds every entry for a correction window,
             and never trusts the browser with permissions.
         </p>
 
-        <div id="loading-text" class="text-lg font-semibold mb-6 text-slate-200">Checking your access…</div>
-
-        <div class="flex flex-col sm:flex-row gap-3">
-            <button id="login-btn" class="hidden bg-blue-600 text-white px-8 py-3 rounded-lg shadow-lg hover:bg-blue-700 transition font-bold">
-                Sign in with Google
-            </button>
-            <button id="demo-btn" class="bg-white/10 backdrop-blur-md text-white border border-white/20 px-8 py-3 rounded-lg shadow-lg hover:bg-white/20 transition font-bold">
-                Try the demo
-            </button>
+        <!-- Loading -->
+        <div id="auth-loading" class="hidden text-lg font-semibold text-slate-200">
+            <span id="loading-text">Checking your access…</span>
         </div>
 
-        <p class="text-xs text-slate-400 mt-4 max-w-sm text-center">
-            The demo runs entirely in your browser with sample data. Nothing is sent anywhere and no account is created.
-        </p>
+        <!-- Sign in or create an account -->
+        <div id="auth-signin" class="hidden w-full max-w-sm bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-md">
+            <h2 id="signin-title" class="text-white text-lg font-bold mb-4">Sign in</h2>
+            <form id="signin-form" class="space-y-3" novalidate>
+                <input id="signin-name" type="text" autocomplete="name" maxlength="80" placeholder="Your name"
+                    class="hidden w-full rounded-lg bg-slate-900/60 border border-white/15 text-white placeholder-slate-400 px-3 py-2 text-sm">
+                <input id="signin-email" type="email" autocomplete="email" required placeholder="Email address"
+                    class="w-full rounded-lg bg-slate-900/60 border border-white/15 text-white placeholder-slate-400 px-3 py-2 text-sm">
+                <input id="signin-password" type="password" autocomplete="current-password" required minlength="10" placeholder="Password"
+                    class="w-full rounded-lg bg-slate-900/60 border border-white/15 text-white placeholder-slate-400 px-3 py-2 text-sm">
+                <button id="signin-submit" type="submit" class="w-full bg-blue-600 text-white px-4 py-2.5 rounded-lg font-bold hover:bg-blue-700 transition">Sign in</button>
+            </form>
+            <div class="flex justify-between text-xs mt-3">
+                <button id="toggle-mode" type="button" class="text-blue-300 hover:text-white">Create an account</button>
+                <button id="forgot-btn" type="button" class="text-slate-300 hover:text-white">Forgot password?</button>
+            </div>
+            <div class="flex items-center gap-3 my-4 text-xs text-slate-400">
+                <span class="flex-1 h-px bg-white/10"></span>or<span class="flex-1 h-px bg-white/10"></span>
+            </div>
+            <button id="login-btn" type="button" class="w-full bg-white text-slate-800 px-4 py-2.5 rounded-lg font-bold hover:bg-slate-100 transition">
+                Continue with Google
+            </button>
+            <button id="demo-btn" type="button" class="w-full mt-2 bg-white/10 text-white border border-white/20 px-4 py-2.5 rounded-lg font-bold hover:bg-white/20 transition">
+                Try the demo
+            </button>
+            <p class="text-xs text-slate-400 mt-4 text-center">
+                The demo runs entirely in your browser with sample data. Nothing is sent anywhere.
+            </p>
+        </div>
+
+        <!-- Verify email -->
+        <div id="auth-verify" class="hidden w-full max-w-sm bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-md text-center">
+            <h2 class="text-white text-lg font-bold mb-2">Verify your email</h2>
+            <p class="text-slate-300 text-sm mb-1">We sent a link to</p>
+            <p id="verify-email" class="text-white font-semibold text-sm mb-4 break-all"></p>
+            <p class="text-slate-400 text-xs mb-5">Open the link, then come back here and continue.</p>
+            <div class="space-y-2">
+                <button id="verify-check" type="button" class="w-full bg-blue-600 text-white px-4 py-2.5 rounded-lg font-bold hover:bg-blue-700">I have verified, continue</button>
+                <button id="verify-resend" type="button" class="w-full bg-white/10 text-white border border-white/20 px-4 py-2 rounded-lg text-sm hover:bg-white/20">Send the link again</button>
+                <button id="verify-signout" type="button" class="text-xs text-slate-300 hover:text-white">Sign out</button>
+            </div>
+        </div>
+
+        <!-- Join or create an organisation -->
+        <div id="auth-onboard" class="hidden w-full max-w-sm bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-md">
+            <h2 class="text-white text-lg font-bold mb-1">Join or create an organisation</h2>
+            <p class="text-slate-400 text-xs mb-5">Enter a passcode from someone in an organisation, or start a new one.</p>
+            <button id="onboard-back" type="button" class="hidden block mb-4 text-xs text-blue-300 hover:text-white">&larr; Back to my organisation</button>
+
+            <form id="join-form" class="space-y-2 mb-6" novalidate>
+                <p class="text-slate-200 text-sm font-semibold">I have a passcode</p>
+                <input id="join-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX"
+                    class="w-full rounded-lg bg-slate-900/60 border border-white/15 text-white placeholder-slate-500 px-3 py-2 font-mono tracking-widest uppercase text-center">
+                <button type="submit" class="w-full bg-blue-600 text-white px-4 py-2.5 rounded-lg font-bold hover:bg-blue-700">Join</button>
+            </form>
+
+            <form id="create-form" class="space-y-2" novalidate>
+                <p class="text-slate-200 text-sm font-semibold">Create a new one</p>
+                <input id="create-name" type="text" maxlength="80" placeholder="Name, e.g. Thrivers Trybe"
+                    class="w-full rounded-lg bg-slate-900/60 border border-white/15 text-white placeholder-slate-500 px-3 py-2 text-sm">
+                <select id="create-type" class="w-full rounded-lg bg-slate-900/60 border border-white/15 text-white px-3 py-2 text-sm">
+                    <option value="company">Company or group</option>
+                    <option value="personal">Personal (just me)</option>
+                </select>
+                <button type="submit" class="w-full bg-white/10 text-white border border-white/20 px-4 py-2.5 rounded-lg font-bold hover:bg-white/20">Create</button>
+            </form>
+
+            <p id="onboard-error" class="hidden mt-4 text-sm text-rose-300"></p>
+            <button id="onboard-signout" type="button" class="block mx-auto mt-5 text-xs text-slate-300 hover:text-white">Sign out</button>
+        </div>
 
         <div id="rejected-text" class="hidden mt-6 text-sm font-semibold text-rose-300 bg-rose-500/10 px-6 py-3 rounded-lg border border-rose-500/20 max-w-md text-center"></div>
     </div>
@@ -94,7 +155,9 @@
                     </button>
                     <div id="welcome-msg" class="text-sm truncate">Welcome</div>
                 </div>
-                <div class="flex gap-2 shrink-0">
+                <div class="flex gap-2 shrink-0 items-center">
+                    <select id="org-switcher" aria-label="Switch organisation"
+                        class="hidden max-w-[10rem] text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5"></select>
                     <button data-action="export:workbook" data-perm="data.export"
                         class="bg-emerald-600 text-white px-3 py-1.5 rounded-lg shadow-sm hover:bg-emerald-700 text-xs font-semibold">Export</button>
                     <button id="signout-btn" data-action="signout"

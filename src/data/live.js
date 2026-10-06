@@ -126,7 +126,8 @@ export function subscribeAll(orgId) {
     ));
 
     track(onSnapshot(collection(db, paths.roles(orgId)), (snap) => {
-        state.roles = docsOf(snap).map((r) => ({ email: r.id, ...r }));
+        // `id` is the Firebase uid (the document key); `email` is kept for display.
+        state.roles = docsOf(snap).map((r) => ({ ...r, uid: r.id, email: r.email ?? r.id }));
         emit(EVENTS.ROLES_CHANGED, state.roles);
     }, (e) => onListenerError('roles', e)));
 

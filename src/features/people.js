@@ -110,7 +110,15 @@ export async function archiveMember(email) {
 
 /* ------------------------------------------------------- Users and roles */
 
+/** Owners are never assignable through a role change: ownership is only created by org creation. */
 export const ASSIGNABLE_ROLES = [ROLES.ADMIN, ROLES.TRUSTEE, ROLES.VIEWER];
+
+/** The role record for a person in the active org, found by email for display. */
+function roleRecordFor(email) {
+    const record = state.roles.find((r) => (r.email ?? r.id) === email);
+    if (!record) throw new ValidationError('That person does not have access to this org.');
+    return record;
+}
 
 function assertRoleManagement(targetRole, targetEmail) {
     const denied = requireCan('roles.manage');
@@ -120,76 +128,27 @@ function assertRoleManagement(targetRole, targetEmail) {
         // its own settings with no way back.
         throw new ValidationError('You cannot change your own role. Ask another owner.');
     }
-    if (targetRole === ROLES.OWNER && state.session.role !== ROLES.OWNER) {
-        throw new ValidationError('Only an owner can appoint another owner.');
+    if (targetRole === ROLES.OWNER) {
+        throw new ValidationError('Ownership cannot be handed out this way.');
+    }
+    if (targetRole && !ASSIGNABLE_ROLES.includes(targetRole)) {
+        throw new ValidationError('Unknown role.');
     }
 }
 
-/**
- * Grant someone access to the org.
- *
- * Two documents are written: the org-scoped role (authoritative for what they
- * can do here) and a `users/{email}` pointer (so sign-in can resolve their org
- * in one read). The pointer is created only if absent, so inviting an existing
- * user to a second org never silently moves them.
- */
-export async function inviteUser({ email, name, role, grants = [], denies = [] }) {
-    const id = normaliseEmail(email);
-    assertRoleManagement(role, id);
-
-    if (!Object.values(ROLES).includes(role)) throw new ValidationError('Unknown role.');
-    if (state.roles.some((r) => (r.email ?? r.id) === id)) {
-        throw new ValidationError('That person already has access. Edit their role instead.');
-    }
-
-    const payload = {
-        email: id,
-        name: String(name ?? '').trim().slice(0, 80) || id,
-        role,
-        grants: sanitisePermissions(grants),
-        denies: sanitisePermissions(denies),
-        status: 'active',
-        invitedBy: state.session.email,
-        createdAtMs: now(),
-        createdAt: serverTimestamp()
-    };
-
-    if (isDemo()) {
-        demoSet('roles', id, payload);
-    } else {
-        await setDoc(doc(db, paths.role(state.session.orgId, id)), payload);
-        await setDoc(doc(db, paths.user(id)), {
-            email: id,
-            orgId: state.session.orgId,
-            role,
-            name: payload.name,
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-    }
-
-    await logAudit(`Granted ${ROLE_LABELS[role]} access to ${id}`, {
-        category: AUDIT_CATEGORY.GOVERNANCE, targetId: id,
-        detail: grants.length ? 'Extra permissions: ' + grants.join(', ') : null
-    });
-    return payload;
-}
-
+/** Change someone's role. The rules refuse this for anyone at or above the actor. */
 export async function changeUserRole(email, role) {
     const id = normaliseEmail(email);
     assertRoleManagement(role, id);
 
-    const existing = state.roles.find((r) => (r.email ?? r.id) === id);
-    if (!existing) throw new ValidationError('That person does not have access to this org.');
-    if (existing.role === ROLES.OWNER && countOwners() <= 1) {
-        throw new ValidationError('This is the last owner - appoint another owner before changing this one.');
+    const existing = roleRecordFor(id);
+    if (existing.role === ROLES.OWNER) {
+        throw new ValidationError('Owners cannot be changed here.');
     }
 
     const update = { role, updatedAtMs: now(), updatedBy: state.session.email };
     if (isDemo()) demoUpdate('roles', id, update);
-    else {
-        await updateDoc(doc(db, paths.role(state.session.orgId, id)), update);
-        await setDoc(doc(db, paths.user(id)), { role }, { merge: true });
-    }
+    else await updateDoc(doc(db, paths.role(state.session.orgId, existing.uid)), update);
 
     await logAudit(`Changed ${id} from ${ROLE_LABELS[existing.role]} to ${ROLE_LABELS[role]}`, {
         category: AUDIT_CATEGORY.GOVERNANCE, targetId: id
@@ -201,8 +160,8 @@ export async function setPermissionOverrides(email, { grants, denies }) {
     const id = normaliseEmail(email);
     assertRoleManagement(null, id);
 
-    const existing = state.roles.find((r) => (r.email ?? r.id) === id);
-    if (!existing) throw new ValidationError('That person does not have access to this org.');
+    const existing = roleRecordFor(id);
+    if (existing.role === ROLES.OWNER) throw new ValidationError('Owners already hold every permission.');
 
     const base = new Set(basePermissions(existing.role));
     const update = {
@@ -215,7 +174,7 @@ export async function setPermissionOverrides(email, { grants, denies }) {
     };
 
     if (isDemo()) demoUpdate('roles', id, update);
-    else await updateDoc(doc(db, paths.role(state.session.orgId, id)), update);
+    else await updateDoc(doc(db, paths.role(state.session.orgId, existing.uid)), update);
 
     await logAudit(`Adjusted permissions for ${id}`, {
         category: AUDIT_CATEGORY.GOVERNANCE, targetId: id,
@@ -228,42 +187,41 @@ export async function suspendUser(email, suspended = true) {
     const id = normaliseEmail(email);
     assertRoleManagement(null, id);
 
+    const existing = roleRecordFor(id);
+    if (existing.role === ROLES.OWNER) throw new ValidationError('Owners cannot be suspended here.');
+
     const update = { status: suspended ? 'suspended' : 'active', updatedAtMs: now() };
     if (isDemo()) demoUpdate('roles', id, update);
-    else await updateDoc(doc(db, paths.role(state.session.orgId, id)), update);
+    else await updateDoc(doc(db, paths.role(state.session.orgId, existing.uid)), update);
 
     await logAudit(`${suspended ? 'Suspended' : 'Reinstated'} access for ${id}`, {
         category: AUDIT_CATEGORY.SECURITY, targetId: id
     });
 }
 
+/**
+ * Remove someone's access to this org.
+ *
+ * Deleting the role document is what ends access: the rules check it on every
+ * request. Their membership document lives under their own uid, which an owner
+ * cannot write, so it is left behind. It is harmless: switching to that org
+ * finds no role and simply reports "no access".
+ */
 export async function revokeUser(email) {
     const id = normaliseEmail(email);
     assertRoleManagement(null, id);
 
-    const existing = state.roles.find((r) => (r.email ?? r.id) === id);
-    if (existing?.role === ROLES.OWNER && countOwners() <= 1) {
-        throw new ValidationError('You cannot remove the last owner.');
-    }
+    const existing = roleRecordFor(id);
+    if (existing.role === ROLES.OWNER) throw new ValidationError('Owners cannot be removed here.');
 
     if (isDemo()) demoDelete('roles', id);
-    else {
-        await deleteDoc(doc(db, paths.role(state.session.orgId, id)));
-        await deleteDoc(doc(db, paths.user(id))).catch(() => {
-            // The pointer may belong to another org now; losing it is harmless.
-        });
-    }
+    else await deleteDoc(doc(db, paths.role(state.session.orgId, existing.uid)));
 
     await logAudit(`Revoked all access for ${id}`, {
         category: AUDIT_CATEGORY.SECURITY, targetId: id
     });
 }
 
-function countOwners() {
-    return state.roles.filter((r) => r.role === ROLES.OWNER && r.status !== 'suspended').length;
-}
-
 function sanitisePermissions(list) {
     return Array.from(new Set((list ?? []).filter((p) => Object.hasOwn(PERMISSIONS, p))));
 }
-

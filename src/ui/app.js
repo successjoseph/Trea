@@ -10,7 +10,7 @@ import { $, $$, mount, escapeHtml, onAction, initActionDelegation, debounce } fr
 import { on, emit, EVENTS } from '../core/bus.js';
 import { can, applyPermissionsToDom, basePermissions, ROLE_LABELS, PERMISSIONS, ROLES } from '../core/rbac.js';
 import { fmt, toMajor } from '../core/money.js';
-import { monthLabel, monthKey, dayKey } from '../core/time.js';
+import { monthLabel, monthKey, dayKey, fmtDateTime } from '../core/time.js';
 
 import { ok, err, warn, info, toast, confirmDialog, formDialog } from './toast.js';
 import { initTheme, setPreference, cycleTheme } from './theme.js';
@@ -24,7 +24,8 @@ import {
 import { verifyChain } from '../data/audit.js';
 import { takeManualSnapshot } from '../features/snapshots.js';
 import { initPendingRuntime } from '../features/pending.js';
-import { addMember, updateMember, archiveMember, inviteUser, changeUserRole, setPermissionOverrides, suspendUser, revokeUser } from '../features/people.js';
+import { addMember, updateMember, archiveMember, changeUserRole, setPermissionOverrides, suspendUser, revokeUser, ASSIGNABLE_ROLES } from '../features/people.js';
+import { createInvite, issuableRoles, listPasscodes, revokePasscode } from '../features/join.js';
 import { saveBudget, deleteBudget, saveGoal, archiveGoal, saveRecurring, toggleRecurring, deleteRecurring, runDueRecurring, recordReconciliation, saveSettings } from '../features/records.js';
 import { exportWorkbook, exportCsv, exportJson, exportMemberStatement } from '../features/exports.js';
 import { parseCsv, validateRows, summarise, commitImport, downloadTemplate } from '../features/importer.js';
@@ -472,23 +473,38 @@ function registerActions() {
 
     /* --- access control --- */
     onAction('people:invite', () => run(async () => {
-        if (!await requireRecentAuth('Confirm it is you before granting access.')) return;
+        if (!await requireRecentAuth('Confirm it is you before issuing an invite.')) return;
+        const options = issuableRoles(state.session.role);
+        if (options.length === 0) return warn('Your role cannot invite anyone.');
         const values = await formDialog({
-            title: 'Grant access',
-            submitLabel: 'Grant access',
+            title: 'Invite someone',
+            submitLabel: 'Create passcode',
             fields: [
-                { name: 'email', label: 'Email address', type: 'email', required: true, hint: 'They sign in with this Google account.' },
-                { name: 'name', label: 'Name', required: true },
+                { name: 'email', label: 'Their email address', type: 'email', required: true, hint: 'The passcode only works for this address. They must sign in with it and verify it.' },
                 {
-                    name: 'role', label: 'Role', type: 'select', value: ROLES.VIEWER,
-                    options: Object.values(ROLES).map((r) => ({ value: r, label: ROLE_LABELS[r] })),
-                    hint: 'Owner: everything, including people and settings. Admin: day-to-day treasury. Trustee: oversight and approvals only. Viewer: read-only.'
+                    name: 'role', label: 'Role', type: 'select', value: options[options.length - 1],
+                    options: options.map((r) => ({ value: r, label: ROLE_LABELS[r] })),
+                    hint: 'You can only offer roles below your own.'
                 }
             ]
         });
         if (!values) return;
-        await inviteUser(values);
-        ok(`${values.email} can now sign in as ${ROLE_LABELS[values.role]}.`);
+        const invite = await createInvite(values);
+        showPasscodeDialog(invite);
+        await refreshPasscodes();
+        renderCurrentView();
+    }));
+
+    onAction('passcode:revoke', ({ hash }) => run(async () => {
+        const yes = await confirmDialog({
+            title: 'Revoke this passcode?', tone: 'danger',
+            body: 'It stops working immediately. Nothing else changes.',
+            confirmLabel: 'Revoke'
+        });
+        if (!yes) return;
+        await revokePasscode(hash);
+        ok('Passcode revoked.');
+        await refreshPasscodes();
         renderCurrentView();
     }));
 
@@ -500,7 +516,7 @@ function registerActions() {
             submitLabel: 'Change role',
             fields: [{
                 name: 'role', label: 'Role', type: 'select', value: person?.role,
-                options: Object.values(ROLES).map((r) => ({ value: r, label: ROLE_LABELS[r] }))
+                options: ASSIGNABLE_ROLES.map((r) => ({ value: r, label: ROLE_LABELS[r] }))
             }]
         });
         if (!values) return;
@@ -695,6 +711,58 @@ async function permissionsDialog(person) {
     });
 }
 
+/**
+ * Show a new passcode exactly once. It is never stored in plain text, so this
+ * dialog is the only place it can be copied from.
+ */
+function showPasscodeDialog({ code, email, role, expiresAtMs }) {
+    const overlay = document.createElement('div');
+    overlay.setAttribute('role', 'dialog');
+    overlay.className = 'fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4';
+    overlay.innerHTML = `
+        <div class="bg-white dark:bg-slate-800 dark:text-slate-100 rounded-xl shadow-2xl max-w-md w-full p-6">
+            <h3 class="text-lg font-bold mb-1">Passcode for ${escapeHtml(email)}</h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">
+                Joins as ${escapeHtml(ROLE_LABELS[role] ?? role)}. Works once, only for ${escapeHtml(email)}, until ${escapeHtml(fmtDateTime(expiresAtMs))}.
+            </p>
+            <div class="flex items-center justify-between gap-3 rounded-lg bg-slate-100 dark:bg-slate-900 px-4 py-3">
+                <span id="passcode-value" class="font-mono text-2xl tracking-widest select-all">${escapeHtml(code)}</span>
+                <button data-role="copy" class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Copy</button>
+            </div>
+            <p class="text-xs text-amber-700 dark:text-amber-300 mt-4">
+                This is the only time the code is shown. Send it to them yourself. If it expires, create a new one.
+            </p>
+            <div class="flex justify-end mt-5">
+                <button data-role="close" class="px-4 py-2 rounded border dark:border-slate-600">Done</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector('[data-role="close"]').addEventListener('click', close);
+    overlay.querySelector('[data-role="copy"]').addEventListener('click', async (event) => {
+        try {
+            await navigator.clipboard.writeText(code);
+            event.currentTarget.textContent = 'Copied';
+        } catch {
+            warn('Could not copy automatically. Select the code and copy it.');
+        }
+    });
+}
+
+/** Passcodes are owner-only to list. Anyone else simply gets an empty list. */
+export async function refreshPasscodes() {
+    if (!state.session || state.session.demo || !can('roles.manage')) {
+        state.passcodes = [];
+        return;
+    }
+    try {
+        state.passcodes = await listPasscodes(state.session.orgId);
+    } catch (error) {
+        console.error('[app] could not list passcodes', error);
+        state.passcodes = [];
+    }
+}
+
 /* ------------------------------------------------------------ Commands */
 
 function registerCommands() {
@@ -826,6 +894,10 @@ export function bootUi() {
     }
     on(EVENTS.AUDIT_CHANGED, () => { if (state.ui.view === 'governance') rerender(); });
     on(EVENTS.PENDING_TICK, refreshPendingStrip);
+    on(EVENTS.VIEW_CHANGED, (id) => {
+        if (id !== 'access') return;
+        refreshPasscodes().then(() => { if (state.ui.view === 'access') renderCurrentView(); });
+    });
 
     initPendingRuntime();
     // Render whatever the URL already says (a deep link, or a reload on a

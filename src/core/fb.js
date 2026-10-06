@@ -9,7 +9,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
 import {
     getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-    setPersistence, browserSessionPersistence, reauthenticateWithPopup
+    setPersistence, browserSessionPersistence, reauthenticateWithPopup,
+    createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification,
+    sendPasswordResetEmail, reload
 } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
 import {
     initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -43,6 +45,8 @@ export const db = initializeFirestore(app, {
 export {
     onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
     setPersistence, browserSessionPersistence, reauthenticateWithPopup,
+    createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification,
+    sendPasswordResetEmail, reload,
     doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
     collection, collectionGroup, query, where, orderBy, limit, startAfter,
     onSnapshot, serverTimestamp, runTransaction, writeBatch, increment,
@@ -51,10 +55,14 @@ export {
 
 /** Path helpers - every read/write is org-scoped, so build paths in one place. */
 export const paths = {
-    user: (email) => `users/${email}`,
+    user: (uid) => `users/${uid}`,
+    memberships: (uid) => `users/${uid}/memberships`,
+    membership: (uid, org) => `users/${uid}/memberships/${org}`,
+    passcodes: 'passcodes',
+    passcode: (hash) => `passcodes/${hash}`,
     org: (org) => `orgs/${org}`,
     roles: (org) => `orgs/${org}/roles`,
-    role: (org, email) => `orgs/${org}/roles/${email}`,
+    role: (org, uid) => `orgs/${org}/roles/${uid}`,
     members: (org) => `orgs/${org}/members`,
     member: (org, email) => `orgs/${org}/members/${email}`,
     transactions: (org) => `orgs/${org}/transactions`,
