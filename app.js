@@ -71,7 +71,11 @@ const AUTH_MESSAGES = {
     'auth/weak-password': 'Use at least 10 characters for your password.',
     'auth/too-many-requests': 'Too many attempts. Wait a few minutes and try again.',
     'auth/network-request-failed': 'No connection. Check your network and try again.',
-    'auth/user-disabled': 'This account has been disabled.'
+    'auth/user-disabled': 'This account has been disabled.',
+    'auth/admin-restricted-operation': 'New sign-ups are turned off for this app. Sign in with an account that already exists, or ask an owner for a passcode.',
+    'auth/operation-not-allowed': 'Google sign-in is not turned on for this app yet. Use email and password instead.',
+    'auth/account-exists-with-different-credential': 'That email already has an account with a password. Sign in with email and password.',
+    'auth/popup-blocked': 'Your browser blocked the Google window. Allow pop-ups for this site and try again.'
 };
 
 function authMessage(error) {
@@ -284,7 +288,7 @@ $('#login-btn')?.addEventListener('click', async () => {
     } catch (error) {
         if (error?.code !== 'auth/popup-closed-by-user' && error?.code !== 'auth/cancelled-popup-request') {
             console.error('[auth] sign-in failed', error);
-            err('Sign-in did not complete.');
+            err(authMessage(error));
         }
     }
 });
