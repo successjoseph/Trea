@@ -1,5 +1,11 @@
 /.vscode/
 
+# npm/Vite build output -- reinstalled with `npm install`, rebuilt with
+# `npm run build`.
+/node_modules/
+/dist/
+*.tsbuildinfo
+
 # Firebase service account keys -- never commit these.
 *firebase-adminsdk*.json
 serviceAccountKey.json
