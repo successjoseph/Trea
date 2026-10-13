@@ -15,7 +15,7 @@ export function AuthGate({ router }: { router: Router }) {
             className="h-full flex flex-col items-center justify-center z-50 fixed inset-0 bg-cover bg-center px-4 overflow-y-auto"
             style={{
                 backgroundImage:
-                    "linear-gradient(rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.92)), url('./image.png')"
+                    "linear-gradient(rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.92)), url('/image.png')"
             }}
         >
             <h1 className="text-6xl md:text-7xl font-extrabold tracking-tighter mb-2 drop-shadow-2xl">

@@ -12,7 +12,7 @@ export function App() {
             // Registered only over HTTPS: a service worker on a plain-http origin
             // is either refused or, worse, cached from an origin an attacker can
             // occupy.
-            navigator.serviceWorker.register('./sw.js').catch((error) => {
+            navigator.serviceWorker.register('/sw.js').catch((error) => {
                 console.info('[pwa] service worker not registered', (error as Error)?.message);
             });
         }

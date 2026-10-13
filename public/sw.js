@@ -6,14 +6,16 @@
  * Firestore's own IndexedDB cache handles data offline, and a second cache in
  * front of it would serve stale balances with no way to tell.
  */
-const VERSION = 'trea-v3-0';
+const VERSION = 'trea-v3-1';
 const SHELL = [
     './',
     './index.html',
-    './app.js',
     './manifest.webmanifest',
     './image.png'
 ];
+// The app bundle itself (Vite's hashed /assets/index-*.js) isn't listed here -
+// its filename changes every build, so it can't be shell-cached by name. The
+// network-first fetch handler below caches it dynamically on first load.
 
 self.addEventListener('install', (event) => {
     event.waitUntil(
